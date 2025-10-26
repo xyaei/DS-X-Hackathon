@@ -14,3 +14,4 @@ venv/
 *.sqlite3
 *.db
 # Don't ignore data folder since you have it and might want to keep structure
+data/
