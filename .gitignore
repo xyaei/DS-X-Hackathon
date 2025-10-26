@@ -21,3 +21,4 @@ venv/
 *.merged_analysis_fixed.json
 # Don't ignore data folder since you have it and might want to keep structure
 data/
+data/
