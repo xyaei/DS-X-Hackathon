@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.env
+*.key
+*.pem
+.DS_Store
+*.log
+*.sqlite3
+*.db
+# Don't ignore data folder since you have it and might want to keep structure
