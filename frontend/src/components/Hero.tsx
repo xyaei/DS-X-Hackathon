@@ -1,100 +1,227 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, Upload } from "lucide-react";
 import heroVisual from "@/assets/hero-visual.jpg";
 import { useToast } from "@/components/ui/use-toast";
 
+const API_BASE = "http://localhost:8000/career";
 const ACCEPTED_MIME = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_BYTES = 5 * 1024 * 1024; // 5MB
+
+type UploadResumeResponse = {
+  status: "success" | "error";
+  filename: string;
+  text_length: number;
+  full_text?: string;             // <-- NEW from backend
+  anonymized_preview: string;
+  extracted_skills: string[];
+  skill_count: number;
+};
+
+type RolesResponse = { status: "success"; roles: string[] };
+
+type AnalyzeRequest = {
+  resume_text: string;
+  skills: string[];
+  target_role: string;
+  experience_level?: string;
+  industry?: string;
+};
+
+type AnalyzeResponse = {
+  status: "success";
+  analysis: any;                 // depends on analyzer; fallback returns a known shape
+  role: string;
+  industry: string;
+  analysis_source?: string;      // "fallback_analyzer" or "enhanced_analyzer"
+};
 
 const Hero = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [parsed, setParsed] = useState<{ pages: number; text: string } | null>(null);
+
+  const [roles, setRoles] = useState<string[]>([]);
+  const [role, setRole] = useState<string>("Data Analyst");
+
+  const [isLoadingRoles, setIsLoadingRoles] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const [parsed, setParsed] = useState<{
+    text: string;
+    skills: string[];
+    filename: string;
+  } | null>(null);
+
+  const [analysis, setAnalysis] = useState<AnalyzeResponse | null>(null);
   const { toast } = useToast();
+
+  // Load available roles once
+  useEffect(() => {
+    const loadRoles = async () => {
+      try {
+        setIsLoadingRoles(true);
+        const res = await fetch(`${API_BASE}/roles`);
+        if (!res.ok) throw new Error(`Failed to load roles (${res.status})`);
+        const data: RolesResponse = await res.json();
+        setRoles(data.roles || []);
+        if (data.roles?.length && !data.roles.includes(role)) {
+          setRole(data.roles[0]);
+        }
+      } catch (err: any) {
+        toast({
+          title: "Could not fetch roles",
+          description: err?.message ?? "Please check the backend.",
+          variant: "destructive",
+        });
+      } finally {
+        setIsLoadingRoles(false);
+      }
+    };
+    loadRoles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openFilePicker = () => fileInputRef.current?.click();
 
   const validateFile = (file: File) => {
     if (!ACCEPTED_MIME.includes(file.type)) {
-      toast({ title: "Unsupported file", description: "Please upload a PDF, JPG, or PNG.", variant: "destructive" });
+      toast({
+        title: "Unsupported file",
+        description: "Please upload a PDF, JPG, or PNG.",
+        variant: "destructive",
+      });
       return false;
     }
     if (file.size > MAX_BYTES) {
-      toast({ title: "File too large", description: "Max file size is 5MB.", variant: "destructive" });
+      toast({
+        title: "File too large",
+        description: "Max file size is 5MB.",
+        variant: "destructive",
+      });
       return false;
     }
     return true;
   };
 
-  const handleFile = async (file: File) => {
+  // Stage only; don’t upload yet
+  const stageFile = (file: File) => {
     if (!validateFile(file)) return;
-
     setSelectedFile(file);
-    setParsed(null); // reset previous parse result
+    setParsed(null);
+    setAnalysis(null);
 
-    // Image preview (PDFs won't preview here)
     if (file.type.startsWith("image/")) {
       const url = URL.createObjectURL(file);
       setPreviewUrl(url);
     } else {
       setPreviewUrl(null);
     }
-
-    // Parse PDFs via FastAPI
-    const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-    if (!isPdf) {
-      toast({ title: "Image selected", description: "Preview shown. Parsing runs for PDFs only." });
-      return;
-    }
-
-    try {
-      setIsUploading(true);
-      const formData = new FormData();
-      formData.append("resume", file); // must match FastAPI param name
-
-      const res = await fetch("http://localhost:8000/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const msg = await res.text().catch(() => "");
-        throw new Error(msg || `Upload failed with status ${res.status}`);
-      }
-
-      const data: {
-        ok: boolean;
-        filename: string;
-        pages: number;
-        first_page_text: string;
-      } = await res.json();
-
-      setParsed({ pages: data.pages ?? 0, text: data.first_page_text ?? "" });
-      toast({ title: "Parsed resume", description: `Detected ${data.pages ?? 0} page(s).` });
-    } catch (err: any) {
-      toast({ title: "Upload failed", description: err?.message ?? "Something went wrong.", variant: "destructive" });
-    } finally {
-      setIsUploading(false);
-    }
   };
 
   const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) handleFile(file);
+    if (file) stageFile(file);
     e.currentTarget.value = ""; // allow re-selecting same file
   };
 
   const onDrop = (e: React.DragEvent<HTMLElement>) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
-    if (file) handleFile(file);
+    if (file) stageFile(file);
   };
   const onDragOver = (e: React.DragEvent<HTMLElement>) => e.preventDefault();
+
+  // Submit: upload resume, then analyze
+  const onAnalyze = async () => {
+    if (!selectedFile) {
+      toast({ title: "No file selected", description: "Please choose a resume first." });
+      return;
+    }
+
+    try {
+      setIsAnalyzing(true);
+      setParsed(null);
+      setAnalysis(null);
+
+      // 1) Upload to /career/upload-resume (field "file")
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      const uploadRes = await fetch(`${API_BASE}/upload-resume`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        const msg = await uploadRes.text().catch(() => "");
+        throw new Error(msg || `Upload failed (${uploadRes.status})`);
+      }
+
+      const uploadJson: UploadResumeResponse = await uploadRes.json();
+      const fullText =
+        uploadJson.full_text ??
+        uploadJson.anonymized_preview ??
+        ""; // backend now returns full_text for PDFs and text files
+      const skills = uploadJson.extracted_skills ?? [];
+
+      setParsed({
+        text: uploadJson.anonymized_preview ?? "",
+        skills,
+        filename: uploadJson.filename,
+      });
+
+      toast({
+        title: "Resume processed",
+        description: `Found ${skills.length} skill(s).`,
+      });
+
+      // 2) Analyze using full extracted text
+      const analyzePayload: AnalyzeRequest = {
+        resume_text: fullText,
+        skills,
+        target_role: role,
+        experience_level: "Intermediate",
+        industry: "Technology",
+      };
+
+      const analyzeRes = await fetch(`${API_BASE}/analyze-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(analyzePayload),
+      });
+
+      if (analyzeRes.ok) {
+        const analyzeJson: AnalyzeResponse = await analyzeRes.json();
+        setAnalysis(analyzeJson);
+        const srcLabel =
+          analyzeJson.analysis_source === "fallback_analyzer"
+            ? "Local baseline"
+            : "Enhanced analyzer";
+        toast({
+          title: "Analysis ready",
+          description: `Source: ${srcLabel}`,
+        });
+      } else {
+        // Non-fatal: still show parsed preview/skills
+        const msg = await analyzeRes.text().catch(() => "");
+        toast({
+          title: "Analyzer not available",
+          description: msg || "Showing extracted skills only.",
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: "Analysis failed",
+        description: err?.message ?? "Something went wrong.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   return (
     <section
@@ -124,25 +251,57 @@ const Hero = () => {
               Benchmark your resume against anonymized peer data, identify skill gaps, and discover your optimal career path with AI-powered insights.
             </p>
 
-            <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+            {/* Controls: Role + Upload + Analyze */}
+            <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start items-stretch">
+              {/* Role dropdown */}
+              <div className="min-w-[220px]">
+                <label htmlFor="role" className="sr-only">Target role</label>
+                <select
+                  id="role"
+                  className="w-full h-11 rounded-md border bg-background px-3 text-sm"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  disabled={isLoadingRoles || isAnalyzing}
+                  aria-label="Select your target role"
+                >
+                  {roles.length === 0 ? (
+                    <option value={role} disabled>
+                      {isLoadingRoles ? "Loading roles..." : "No roles available"}
+                    </option>
+                  ) : (
+                    roles.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
               <Button
                 variant="hero"
                 size="lg"
                 className="group"
                 onClick={openFilePicker}
-                disabled={isUploading}
+                disabled={isAnalyzing}
                 aria-label="Upload your resume as PDF, JPG, or PNG"
               >
-                {isUploading ? "Uploading..." : "Upload Resume"}
+                {selectedFile ? "Change File" : "Upload Resume"}
                 <Upload className="ml-2 h-5 w-5 group-hover:translate-y-1 transition-transform" />
               </Button>
 
-              <Button variant="outline" size="lg">
-                See How It Works
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={onAnalyze}
+                disabled={!selectedFile || isAnalyzing}
+                aria-label="Submit and analyze resume"
+              >
+                {isAnalyzing ? "Analyzing..." : "Submit & Analyze"}
                 <ArrowRight className="ml-2 h-5 w-5" />
               </Button>
 
-              {/* Hidden file input, triggered by the button */}
+              {/* Hidden file input */}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -171,14 +330,30 @@ const Hero = () => {
               </div>
             )}
 
-            {/* Parsed text (first page) */}
+            {/* Parsed text + skills */}
             {parsed && (
-              <div className="mt-4 text-left max-w-2xl mx-auto lg:mx-0">
-                <div className="text-sm text-muted-foreground mb-1">
-                  {parsed.pages} page(s) detected — first page text:
+              <div className="mt-4 text-left max-w-2xl mx-auto lg:mx-0 space-y-3">
+                <div className="text-sm text-muted-foreground">
+                  Anonymized preview:
                 </div>
                 <pre className="whitespace-pre-wrap text-sm border rounded p-3 max-h-60 overflow-auto">
                   {parsed.text || "(no text found)"}
+                </pre>
+                <div className="text-sm text-muted-foreground">
+                  Extracted skills: {parsed.skills.length ? parsed.skills.join(", ") : "(none detected)"}
+                </div>
+              </div>
+            )}
+
+            {/* Analysis results (if available) */}
+            {analysis && (
+              <div className="mt-4 text-left max-w-2xl mx-auto lg:mx-0 space-y-2 border rounded p-4">
+                <div className="font-semibold">Analysis for role: {analysis.role}</div>
+                <div className="text-xs text-muted-foreground">
+                  Source: {analysis.analysis_source === "fallback_analyzer" ? "Local baseline" : "Enhanced analyzer"}
+                </div>
+                <pre className="whitespace-pre-wrap text-sm overflow-auto">
+                  {JSON.stringify(analysis.analysis, null, 2)}
                 </pre>
               </div>
             )}
