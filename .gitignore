@@ -13,5 +13,11 @@ venv/
 *.log
 *.sqlite3
 *.db
+*.merged.json
+*.merged_sample.json
+*.merged_processed.csv
+*.merged_processed_fixed.csv
+*.merged_analysis.json
+*.merged_analysis_fixed.json
 # Don't ignore data folder since you have it and might want to keep structure
 data/
